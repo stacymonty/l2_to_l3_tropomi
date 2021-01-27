@@ -2,250 +2,174 @@
 
 # ---------------------------------------------------------------------
 # Stacy Montgomery, NOV 2018 - DEC 2018
-# This program takes in L2 TropOMI data and regrids the data to new domain.
-# Must have: earth trig.py by Prof. Van der Lee to make grid
-# 
-# Known errors: you cannot switch between domains from part 1 and 2, the resulting grid gets messed up
-
+# This program takes the cropped l2 files and regrids the data to new domain.
+# Theres the griddata way -- which causes striping, smoothing function sucks
+# then RBF way which requires submission to super computer (or something that allows ~16GB of memory)
+# but it's smoother
 # ---------------------------------------------------------------------
 #                             USER INPUT
 # ---------------------------------------------------------------------
+from netCDF4 import Dataset
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import os
+import netCDF4
+import math
+from scipy.interpolate import griddata
 
-# grid file
-dir='/projects/b1045/jschnell/ForStacy/'
-ll='latlon_ChicagoLADCO_d03.nc'
-
-
-#grid file 
-grid='/home/asm0384/RegridTropOMI/GRIDCRO2D_Chicago_LADCO_2018-08-01.nc'
-grid=dir+ll
-
-#Pixel size for L3 grid- in degrees 
-cell_size_deg=.005
-
-#Radius for averaging/smoothing kernel- in degrees & distance for threshold
-distance_radius_in_degrees = .05
-
-# Projection
+# Projections -- this will be used in naming files later
 domain = 'Chicago'
-loncrn_min=-88; loncrn_max=-87; latcrn_min= 40; latcrn_max= 43
+# grid file
+grid='/home/asm0384/ChicagoStudy/inputs/grid/latlon_ChicagoLADCO_d03.nc'
+lon,lat = np.array(Dataset(grid,'r')['lon']),np.array(Dataset(grid,'r')['lat'])
 
-# Dates of Interest
-startday=1; endday=31
-startmonth=8; endmonth=8
+var='NO2'
 
+#Directory to where L2 TropOMI files are stored
+dir='/projects/b1045/TropOMI/'+var+'/l2_cut/'
+
+#from netcdf file, what do you want
+varname='nitrogendioxide_tropospheric_column'
+varprecision='qa_value'
 tagdir = '~/tag/'
 
-# data files and info
-varname = 'nitrogendioxide_tropospheric_column'
-varprecision = 'nitrogendioxide_tropospheric_column_precision'
-fout_dir_l2_cut='/projects/b1045/NO2/l2_cut/'
-fout_dir_l3='/projects/b1045/NO2/l3/'
+dates=['201901'+str(i).zfill(2) for i in range(1,32)]
+
+filestartswith  = 'S5P_OFFL_L2__NO2____' # 'S5P_OFFL_L2__O3'
 
 
-# ---------------------- Libraries  -----------------------
-from netCDF4 import Dataset as NetCDFFile; import matplotlib.pyplot as plt; import numpy as np;
-import pandas as pd; import numpy.ma as ma; import time as timeit; import os; import math
-from math import sin, cos, sqrt, atan2, radians
+# pull grid stuff
+#Get number of files in directory
+onlyfiles = next(os.walk(dir))[2]
+#onlyfiles = [x for x in onlyfiles if x.startswith(filestartswith)]
+onlyfiles=sorted(onlyfiles)# so th
 
-# ---------------------- User Defined Functions -----------------------
+fstart=[filestartswith+dates[i] for i in range(len(dates))]
+fnames=[]
 
-#Returns new lat/lon grid with given cell size around equator
-def creategrid(min_lon, max_lon, min_lat, max_lat, cell_size_deg, mesh=False):
-    min_lon = math.floor(min_lon)
-    max_lon = math.ceil(max_lon)
-    min_lat = math.floor(min_lat)
-    max_lat = math.ceil(max_lat)
-    lon_num = int((max_lon - min_lon)/cell_size_deg)
-    lat_num = int((max_lat - min_lat)/cell_size_deg)
-    grid_lons = np.zeros(lon_num) # fill with lon_min
-    grid_lats = np.zeros(lat_num) # fill with lon_max
-    grid_lons = grid_lons+(np.asarray(range(lon_num))*cell_size_deg)
-    grid_lats = grid_lats+(np.asarray(range(lat_num))*cell_size_deg)
-    grid_lons = grid_lons-np.mean(grid_lons)
-    grid_lats = grid_lats-np.mean(grid_lats)
-    #grid_lons, grid_lats = np.meshgrid(grid_lons, grid_lats)
-    return grid_lons, grid_lats
-
-# adapted from : http://kbkb-wx-python.blogspot.com/2016/08/find-nearest-latitude-and-longitude.html
-def find_index(point_lon, point_lat, grid_lon, grid_lat, distance_radius_in_degrees):
-# point_lon, point_lat = list of lat lon points --> lat_list, lon_list = [x1,x2][y1,y2]
-# grid_lon, grid_lat = np.array of gridded lat lon --> grid_x= np.array([x1,x2,x3],[x4,x5,x6])
-# distance_radius_in_degrees = how large of a difference between matching points
-#'''''''''''''''''''''''''''''''''
-# 
-#for rr in range(1):
-   xx=[];yy=[];distance=[]
-   for i in range(len(point_lat)):
-      abslat = np.abs(grid_lat-point_lat[i])
-      abslon= np.abs(grid_lon-point_lon[i])
-      c = np.maximum(abslon,abslat)
-      #x, y = np.where(c == np.min(c))
-      x, y = np.where(c < distance_radius_in_degrees)
-      dist=[(deltas(grid_lat[x][t][y][t]*p, grid_lon[x][t][y][t]*p, point_lat[i]*p, point_lon[i]*p))/p for t in range(len(x))]      #add indices of nearest wrf point station
-      xx.append(x) 
-      yy.append(y)
-      distance.append(dist)
-   #return indices list
-   return xx, yy, distance
-
-# distance=[(deltas(grid_lat[x][t][y][t]*p, grid_lon[x][t][y][t]*p, point_lat[i][1]*p, point_lon[i]*p))/p for t in range(len(x))]
-# lat/lon,lat/lon
-#point_lon, point_lat, grid_lon, grid_lat= pswnlon, pswnlat,nxlon,nylat
+for f in onlyfiles: 
+	for fs in fstart: 
+		if f.startswith(fs): fnames.append(f)
 
 
-# --------------------------------------------------------------------------------------------------
-#                         !! Part 2: !!
-#     With screened files, make new grid and set values to new grid
-# --------------------------------------------------------------------------------------------------
-# ---------------------------------------------------------------------
-# Step 1: Download files that are screened to be in domain into dataframe for easy filtering
-# ---------------------------------------------------------------------
+# pll -- will be all the points across time and their locations
+# intemed_grid -- will be each data already linearly interpolated using girddata
+pll = []
+intermed_grid=[]
+
+for i in range(len(fnames)):
+   #if i !=0 and i !=3 and i !=8 and i !=11:
+# load in file
+      filename=fnames[i]
+      nc = Dataset(dir+fnames[i],'r')
+   #nc = Dataset(fnames[i],'r')
+   #match the lat lons to the grid
+      clat,clon,d,qa=np.array(nc['latitude']).ravel(),np.array(nc['longitude']).ravel(),np.array(nc[varname]).ravel(),np.array(nc[varprecision]).ravel()
+      d[d>10000]=float("nan") # since the mask isn't working sometimes -- sometimes values are actually the huge float, other times they're masked!
+      np.ma.set_fill_value(d,float("nan"))
+   # filter with qa value
+      thresh=qa>.5
+      clat,clon,d,qa_cut = clat[thresh],clon[thresh],d[thresh],qa[thresh]
+      if len(d) > 0:
+         points=[[clon[x],clat[x]] for x in range(len(clat))]
+         points=np.asarray(points)
+         if i == 0: pll = pd.DataFrame([clon,clat,d]).T
+         else: pll = pll.append(pd.DataFrame([clon,clat,d]).T)
+      # try linear grid
+         try: intermed_grid.append(griddata(points,d,(lon,lat),method='linear',fill_value=float("nan")))
+         except: print('nevermind')
+      # Move on to next file,
+      nc.close()
+   
+
+intermed_grid=np.asarray(intermed_grid)
+
+# do some data cleaning for intermed grid
+nans = [np.count_nonzero(~np.isnan(intermed_grid[i])) for i in range(len(intermed_grid))]
+cut = []
+
+for nan in nans:
+   if nan < len(lon.ravel())*0.7:
+      cut.append(False)
+   else:
+      cut.append(True)
+
+intermed_grid[cut].mean(axis=0)
+
+# do sum data cleaning  for pll 
+# -- pll has ALL of the lon/lat points in the onth
+pll = pll[pll[0]>lon.min()+0.1]
+pll = pll[pll[0]<lon.max()+0.1]
+pll = pll[pll[1]>lat.min()+0.1]
+pll = pll[pll[1]<lat.max()+0.2]
+pll=pll[pll[2]>0]
+
+pll.reset_index(inplace=True)
+
+# zip lat lon together
+points=[[pll[0][x],pll[1][x]] for x in range(len(pll))]
+
+#original way:
+# causes striping because of values...
+#griddata(list(zip(pll[0],pll[1])),pll[2].tolist(),(lon,lat),method='linear',fill_value=float("nan"))
+
+# create RBF function given points
+# allows for smoothing, but need to submit to supercomputer
+f = interpolate.Rbf(ptx, pty, z, function='linear')
+
+# apply to lat lon
+grid=f(lon,lat)
+grid = pd.DataFrame(grid)
+grid.to_csv('~/rbdinterp.csv')
 
 
+# This code is for griddata stuff
+#--------------------------------------------
 
-#***************************************
+# intermed_grid=np.asarray(intermed_grid)
+# week = np.nanmean(intermed_grid,axis=0)
+# plt.figure(figsize=(8,10))
+# plt.pcolormesh(lon,lat,week)
+# plt.title('Avg for ' + dates[0]+'-'+dates[-1])
 
-#Get number of files in directory with L2 domain CSV files
-onlyfiles = next(os.walk(fout_dir_l2_cut))[2]
-onlyfiles=sorted(onlyfiles) # so that searching for dates are easier
-numfiles=(len(onlyfiles))
+# plt.tight_layout()
+# #plt.show()
 
-# Days and months we're interested in:
-datesofinterest=np.arange(startday,endday+1)
-monthsofinterest=np.arange(startmonth,endmonth+1)
+# # Sanity check: how do these all look individually
+# fig,axs = plt.subplots(4,3,figsize=(8,10))
+# axs=axs.ravel()
+# for i in range(len(intermed_grid)):
+#    ax=axs[i]
+#    ax.set_title('Day %i'%(i))
+#    ax.pcolormesh(lon,lat,intermed_grid[i])
 
-#data frame with all data
-megaframe= pd.DataFrame()
+# plt.tight_layout()
+# plt.show()
 
-# Loop through files and find the files within the given directory
-for i in range(numfiles):
-    filename=onlyfiles[i]
-    ymd=filename.split('_made_')
-    ymd=ymd[0]
-    year,month,date=ymd.split("-")
-    #Check to see if the file is the date you are looking for
-    if int(date) in datesofinterest and int(month) in monthsofinterest:
-        alldata = pd.read_csv(fout_dir_l2_cut+filename)
-        megaframe=pd.concat([megaframe,alldata],ignore_index=True)
-
-
-# Some data is randomly saved as a string, so we need to filter that out
-stringq='--'
-count=0
-badpoints=[]
-for point in megaframe[varname]:
-     if type(point)==type(stringq):
-         badpoints.append(count)
-     count=count+1
-
-megaframe=megaframe.drop(megaframe.index[badpoints])
-
-# Get rid of negative and missing values-- commented out because it might bias data
-# megaframe[varname]=megaframe[varname].mask(megaframe[varname]<0)
-megaframe[varname]=megaframe[varname].mask(megaframe[varname]>9.969210e+35)
-
-# ---------------------------------------------------------------------
-# Step 2: Make new grid and set values to new grid
-# The weighting for the pixels are linear with wx=(r-d)/a
-# where d=distance(new_lat,new_lon,original_lat,original_lon), 
-# r=preset radius, a is a constant to make sum(wx)=1
-# ---------------------------------------------------------------------
-
-# $$$ most relevant for Cassia $$$ #
-
-from earthtrig import * #will use rotate function
-
-# Create arrays out of the dataframes to index search faster
-pswnlat=np.array(megaframe['lats']).reshape(len(megaframe['lats']),1)
-pswnlon=np.array(megaframe['lons']).reshape(len(megaframe['lons']),1)
-pswnno2=np.array(megaframe[varname]).reshape(len(megaframe[varname]),1)
-
-# pull
-gridnc = NetCDFFile(grid,'r')
-nxlon,nylat= gridnc['lon'][:], gridnc['lat'][:]
-ny = len(nylat[0]); nx=len(nxlon)
-
-# get nearest indices of grid for each datapoint 
-from earthtrig import * 
-#point_lon, point_lat, grid_lon, grid_lat= pswnlon, pswnlat,nxlon,nylat
-xx,yy,distance= find_index(pswnlon, pswnlat,nxlon,nylat, distance_radius_in_degrees)
-
-# drop data that doesnt match the grid
-mask=pd.DataFrame(xx)[0].notna()
-pswnlat, pswnlon, pswnno2 = np.array(pd.DataFrame(pswnlat)[mask]), np.array(pd.DataFrame(pswnlon)[mask]),np.array(pd.DataFrame(pswnno2)[mask])
-
-#mask xx yy dist .. can't do dataframe because will fill up missing points with na
-xx_drop,yy_drop,dist_drop=[],[],[]
-for i in range(len(mask)):
-   if mask[i]==True:
-       xx_drop.append(xx[i])
-       yy_drop.append(yy[i])
-       dist_drop.append(distance[i])
-
-# make temp grid that mimics netcdf grid size
-gridno2 =[]; griddistance=[]
-for x in range(nx):
-   gridno2.append([[] for y in range(ny)])
-   griddistance.append([[] for y in range(ny)])
-
-# reset counts
-i,j=0,0
-
-# fill grid
-for i in range(len(xx_drop)): 
-   for j in range(len(xx_drop[i])):
-      gridno2[int(xx_drop[i][j])][int(yy_drop[i][j])].append(pswnno2[i][0])
-      griddistance[int(xx_drop[i][j])][int(yy_drop[i][j])].append(dist_drop[i][0])
-
-i,j=0,0
-#now average grid points given distances, will result in final grid average
-# MUST UPDaTE-- currently just an average
-for i in range(len(gridno2)):
-   for j in range(len(gridno2[0])):
-      gridno2[i][j]= np.nanmean(gridno2[i][j])
-
-# $$$ most relevant for Cassia $$$ #
-
-# ---------------------------------------------------------------------
-# Make figure 
-# ---------------------------------------------------------------------
-
-# make fig object
-fig, axs = plt.subplots(subplot_kw={'projection': crs_new},figsize=(6, 6))
-
-data=pd.DataFrame(gridno2)
-
-#set levels for plot
-vmin,vmax= data.min().min(),data.max().max()
-levels = np.linspace(vmin, vmax, 20)
-
-# get rid of values outside the levels we are contouring to
-data[pd.DataFrame(data)>vmax]=vmax
+# ncout = Dataset(filestartswith+dates[0]+'_'+dates[-1]+'.nc','w')
+# dname=[('x',lon.shape[0]),('y',lat.shape[1]),('time',1)]
+# var=[(varname,week,d.dtype),('longitude',lon,d.dtype),('latitude',lat,d.dtype)]
 
 
-#plot the gridded data by using contourf
-cs=plt.contourf(nxlons,nylats,data,cmap= "inferno", transform=crs_new, levels=levels)
+# for dd in dname:
+#       	ncout.createDimension(dd[0], dd[1])
+#       	# Copy cropped variables
 
-# set axes extents from shapefile
-yl=41.65;yu=42.3
-xu=-87.47;xl=-88.3
-axs.set_extent([xl,xu,yl,yu],crs= crs_new)
+# for v_name in var:
+#       	outVar = ncout.createVariable(v_name[0], v_name[2], (dname[0][0],dname[1][0]))
+#       	outVar[:] = v_name[1].data # for some reason adding the : is important
+#       # Comprehension check: plt.scatter(ncout['longitude'][0],ncout['latitude'][0],c=ncout[varname][0])
+#       # close out
 
-#add colorbar and label
-cbar=plt.colorbar(cs,boundaries=np.arange(vmin,11))
-#cbar.ax.set_ylabel('100 * ' +ncfile[0][var].units)
-cbar.set_ticks(np.arange(vmin, vmax, 10))
 
-# add state lines
-import cartopy.feature as cfeature
-states_provinces = cfeature.NaturalEarthFeature(
-        category='cultural',
-        name='admin_1_states_provinces_lines',
-        scale='50m',facecolor='none')
+# ncout.close()
 
-axs.add_feature(cfeature.STATES, edgecolor='black')
+# print('Wrote out with '+filename)
 
-#plt.pcolor(nxlon,nylat,gridno2)
+# #import scipy.ndimage
+# #zlat,zlon,zd=scipy.ndimage.zoom(clat,3),scipy.ndimage.zoom(clon,3),scipy.ndimage.zoom(d,3)
 
-plt.show()
+# ncout = Dataset('chi_mask.nc','w')
+# dname=[('x',lon.shape[0]),('y',lat.shape[1]),('time',1)]
+# var=[('mask',mask*1,(mask*1).dtype),('longitude',lon,lat.dtype),('latitude',lat,lat.dtype)]
