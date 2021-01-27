@@ -116,7 +116,7 @@ points=[[pll[0][x],pll[1][x]] for x in range(len(pll))]
 
 # create RBF function given points
 # allows for smoothing, but need to submit to supercomputer
-f = interpolate.Rbf(ptx, pty, z, function='linear')
+f = interpolate.Rbf(pll[0], pll[1], pll[2], function='linear')
 
 # apply to lat lon
 grid=f(lon,lat)
