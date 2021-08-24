@@ -1,6 +1,6 @@
 # l2_to_l3_tropomi
 
-Regrid TropOMI L2 Data
+Regrid TropOMI L2 Data to CMAQ grid
 
 Stacy Montgomery, Aug. 2021
 
